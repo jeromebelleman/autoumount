@@ -9,6 +9,7 @@ import signal
 import argparse
 import subprocess
 import pyinotify
+import psutil
 
 class EventHandler(pyinotify.ProcessEvent):
     '''
@@ -60,7 +61,19 @@ def main():
     # Set up timeout
     def umount(signum, frame): # pylint: disable=unused-argument
         '''Unmount'''
-        subprocess.call(args.command, shell=True)
+        for proc in psutil.process_iter():
+            try:
+                if proc.cwd().startswith(args.mountpoint):
+                    proc.kill()
+                    continue
+                for fle in proc.open_files():
+                    if fle[0].startswith(args.mountpoint):
+                        proc.kill()
+                        continue
+            except psutil.AccessDenied:
+                pass
+
+        subprocess.call('%s %s' % (args.command, args.mountpoint), shell=True)
     signal.signal(signal.SIGALRM, umount)
     signal.alarm(args.timeout)
 
