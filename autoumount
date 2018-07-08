@@ -1,0 +1,71 @@
+#! /usr/bin/env python
+
+'''
+Automatically umount filesystem after a period of inactivity
+'''
+
+import sys
+import signal
+import argparse
+import subprocess
+import pyinotify
+
+class EventHandler(pyinotify.ProcessEvent):
+    '''
+    Reset timer on filesystem activity
+    '''
+
+    def __init__(self, timeout):
+        '''
+        Set timeout
+        '''
+
+        super(EventHandler, self).__init__()
+        self.timeout = timeout
+
+    def process_IN_ACCESS(self, _): # pylint: disable=invalid-name
+        '''
+        Reset timer on accesses
+        '''
+
+        signal.alarm(self.timeout)
+
+    def process_IN_ATTRIB(self, _): # pylint: disable=invalid-name
+        '''
+        Reset timer on attribute changes
+        '''
+
+        signal.alarm(self.timeout)
+
+
+def main():
+    '''
+    Main loop
+    '''
+
+    # Parse arguments
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('mountpoint')
+    parser.add_argument('timeout', type=int)
+    parser.add_argument('command')
+    args = parser.parse_args()
+
+    # Set up inotify
+    manager = pyinotify.WatchManager()
+    handler = EventHandler(args.timeout)
+    notifier = pyinotify.Notifier(manager, handler)
+    mask = pyinotify.IN_ACCESS | pyinotify.IN_ATTRIB
+    manager.add_watch(args.mountpoint, mask, rec=True)
+
+    # Set up timeout
+    def umount(signum, frame): # pylint: disable=unused-argument
+        '''Unmount'''
+        subprocess.call(args.command, shell=True)
+    signal.signal(signal.SIGALRM, umount)
+    signal.alarm(args.timeout)
+
+    notifier.loop()
+
+
+if __name__ == '__main__':
+    sys.exit(main())
