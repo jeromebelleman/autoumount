@@ -74,6 +74,8 @@ def main():
                 pass
 
         subprocess.call('%s %s' % (args.command, args.mountpoint), shell=True)
+        signal.alarm(args.timeout)
+
     signal.signal(signal.SIGALRM, umount)
     signal.alarm(args.timeout)
 
