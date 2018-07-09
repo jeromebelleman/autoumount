@@ -5,23 +5,31 @@ Automatically umount filesystem after a period of inactivity
 '''
 
 import sys
+import os
 import signal
 import argparse
 import subprocess
+import logging
 import pyinotify
 import psutil
+
+NORMAL = pyinotify.IN_ACCESS | pyinotify.IN_ATTRIB
+CREATE = pyinotify.IN_CREATE
 
 class EventHandler(pyinotify.ProcessEvent):
     '''
     Reset timer on filesystem activity
     '''
 
-    def __init__(self, timeout):
+    def __init__(self, manager, mountpoint, timeout):
         '''
         Set timeout
         '''
 
         super(EventHandler, self).__init__()
+
+        self.manager = manager
+        self.mountpoint = mountpoint
         self.timeout = timeout
 
     def process_IN_ACCESS(self, _): # pylint: disable=invalid-name
@@ -38,6 +46,20 @@ class EventHandler(pyinotify.ProcessEvent):
 
         signal.alarm(self.timeout)
 
+    def process_IN_CREATE(self, event): # pylint: disable=invalid-name
+        '''
+        Watch new mountpoint
+        '''
+
+        logging.debug("Removing watch on %s", event.pathname)
+        self.manager.rm_watch(event.wd)
+
+        logging.debug("Adding watch on %s", self.mountpoint)
+        self.manager.add_watch(self.mountpoint, NORMAL)
+
+        logging.debug("Setting up %ds timeout", self.timeout)
+        signal.alarm(self.timeout)
+
 
 def main():
     '''
@@ -49,35 +71,77 @@ def main():
     parser.add_argument('mountpoint')
     parser.add_argument('timeout', type=int)
     parser.add_argument('command')
+    parser.add_argument('--debug', action='store_true',
+                        help="print debug information")
     args = parser.parse_args()
 
-    # Set up inotify
-    manager = pyinotify.WatchManager()
-    handler = EventHandler(args.timeout)
-    notifier = pyinotify.Notifier(manager, handler)
-    mask = pyinotify.IN_ACCESS | pyinotify.IN_ATTRIB
-    manager.add_watch(args.mountpoint, mask, rec=True)
+    # Set up logging
+    logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO,
+                        format='%(asctime)s %(levelname)s %(message)s',
+                        datefmt='%Y-%m-%d %H:%M')
 
-    # Set up timeout
+    # Normalise mountpoint
+    mountpoint = os.path.abspath(args.mountpoint)
+    dirname = os.path.dirname(mountpoint)
+
+    # Initialise watches dictionary for umount function to see
+    watches = {}
+
+    # Signal handler
     def umount(signum, frame): # pylint: disable=unused-argument
-        '''Unmount'''
+        '''
+        Unmount after killing processes if needs be
+        '''
+
+        # Kills processes
         for proc in psutil.process_iter():
             try:
                 if proc.cwd().startswith(args.mountpoint):
+                    logging.debug("Killing %s", ' '.join(proc.cmdline()))
                     proc.kill()
                     continue
                 for fle in proc.open_files():
                     if fle[0].startswith(args.mountpoint):
+                        logging.debug("Killing %s", ' '.join(proc.cmdline()))
                         proc.kill()
                         continue
             except psutil.AccessDenied:
                 pass
 
+        # Unmount filesystem
+        logging.info("Running %s %s", args.command, args.mountpoint)
         subprocess.call('%s %s' % (args.command, args.mountpoint), shell=True)
-        signal.alarm(args.timeout)
+
+        # Remove watches on mountpoint (which may be removed by themselves)
+        for watch in watches:
+            try:
+                manager.rm_watch(watches[watch], quiet=False)
+            except pyinotify.WatchManagerError:
+                continue
+            logging.debug("Removed watch on %s", watch)
+
+        # Add watch on parent directory
+        logging.debug("Adding watch on %s", dirname)
+        manager.add_watch(dirname, CREATE, quiet=False)
+
+    # Set up inotify and alarms
+    logging.debug("Setting up inotify")
+    manager = pyinotify.WatchManager()
+    handler = EventHandler(manager, mountpoint, args.timeout)
+    notifier = pyinotify.Notifier(manager, handler)
 
     signal.signal(signal.SIGALRM, umount)
-    signal.alarm(args.timeout)
+
+    try:
+        logging.debug("Adding watch on %s", mountpoint)
+        watches = manager.add_watch(mountpoint, NORMAL, rec=True, quiet=False)
+
+        logging.debug("Setting up %ds timeout", args.timeout)
+        signal.alarm(args.timeout)
+    except pyinotify.WatchManagerError, exc:
+        logging.debug(exc)
+        logging.debug("Adding watch on %s, then", dirname)
+        watches = manager.add_watch(dirname, CREATE, quiet=False)
 
     notifier.loop()
 
