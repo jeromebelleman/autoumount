@@ -51,14 +51,35 @@ class EventHandler(pyinotify.ProcessEvent):
         Watch new mountpoint
         '''
 
-        logging.debug("Removing watch on %s", event.pathname)
-        self.manager.rm_watch(event.wd)
+        if event.pathname == self.mountpoint:
+            logging.debug("Removing watch on %s", event.path)
+            self.manager.rm_watch(event.wd)
 
-        logging.debug("Adding watch on %s", self.mountpoint)
-        self.manager.add_watch(self.mountpoint, NORMAL)
+            logging.debug("Adding watch on %s", self.mountpoint)
+            self.manager.add_watch(self.mountpoint, NORMAL)
 
-        logging.debug("Setting up %ds timeout", self.timeout)
-        signal.alarm(self.timeout)
+            logging.debug("Setting up %ds timeout", self.timeout)
+            signal.alarm(self.timeout)
+
+
+def killall(mountpoint):
+    '''
+    Kill all processes keeping a filesystem busy
+    '''
+
+    for proc in psutil.process_iter():
+        try:
+            if proc.cwd().startswith(mountpoint):
+                logging.debug("Killing %s", ' '.join(proc.cmdline()))
+                proc.kill()
+                continue
+            for fle in proc.open_files():
+                if fle[0].startswith(mountpoint):
+                    logging.debug("Killing %s", ' '.join(proc.cmdline()))
+                    proc.kill()
+                    continue
+        except psutil.AccessDenied:
+            pass
 
 
 def main():
@@ -93,24 +114,12 @@ def main():
         Unmount after killing processes if needs be
         '''
 
-        # Kills processes
-        for proc in psutil.process_iter():
-            try:
-                if proc.cwd().startswith(args.mountpoint):
-                    logging.debug("Killing %s", ' '.join(proc.cmdline()))
-                    proc.kill()
-                    continue
-                for fle in proc.open_files():
-                    if fle[0].startswith(args.mountpoint):
-                        logging.debug("Killing %s", ' '.join(proc.cmdline()))
-                        proc.kill()
-                        continue
-            except psutil.AccessDenied:
-                pass
+        # Kill processes
+        killall(mountpoint)
 
         # Unmount filesystem
-        logging.info("Running %s %s", args.command, args.mountpoint)
-        subprocess.call('%s %s' % (args.command, args.mountpoint), shell=True)
+        logging.info("Running %s %s", args.command, mountpoint)
+        subprocess.call('%s %s' % (args.command, mountpoint), shell=True)
 
         # Remove watches on mountpoint (which may be removed by themselves)
         for watch in watches:
