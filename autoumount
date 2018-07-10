@@ -12,6 +12,7 @@ from argparse import ArgumentDefaultsHelpFormatter
 import subprocess
 import logging
 import select
+import daemon
 import pyinotify
 import psutil
 
@@ -82,6 +83,7 @@ def waitmount(mtab, mountpoint):
             select.select([], [], [fhl])
             for line in fhl:
                 if mountpoint == line.split()[1]:
+                    logging.info("%s has been mounted", mountpoint)
                     return
 
 
@@ -127,6 +129,54 @@ def addwatches(manager, notifier, mountpoint, timeout):
     notifier.loop()
 
 
+def run(mountpoint, timeout, command, mtab, foreground, debug):
+    '''
+    Run logic
+    '''
+
+    # Set up logging
+    try:
+        logfile = '/var/log/%s.log' % __file__
+        logging.basicConfig(level=logging.DEBUG if debug else logging.INFO,
+                            format='%(asctime)s %(levelname)s %(message)s',
+                            datefmt='%Y-%m-%d %H:%M',
+                            filename=None if foreground else logfile)
+    except IOError, exc:
+        print >> sys.stderr, exc
+        return 1
+
+    # Set up inotify
+    logging.debug("Setting up inotify")
+    manager = pyinotify.WatchManager()
+    handler = EventHandler(timeout)
+    notifier = pyinotify.Notifier(manager, handler)
+
+    # Set up alarming
+    def umount(signum, frame): # pylint: disable=unused-argument
+        '''
+        Unmount after killing processes if needs be
+        '''
+
+        # Kill processes
+        killall(mountpoint)
+
+        # Unmount filesystem
+        logging.info("Running %s %s", command, mountpoint)
+        subprocess.call('%s %s' % (command, mountpoint), shell=True)
+
+        # Wait for mount and add watches again
+        waitmount(mtab, mountpoint)
+        addwatches(manager, notifier, mountpoint, timeout)
+
+    signal.signal(signal.SIGALRM, umount)
+
+    if os.path.ismount(mountpoint):
+        addwatches(manager, notifier, mountpoint, timeout)
+    else:
+        waitmount(mtab, mountpoint)
+        addwatches(manager, notifier, mountpoint, timeout)
+
+
 def main():
     '''
     Main loop
@@ -141,43 +191,18 @@ def main():
     psr.add_argument('--mtab', default='/etc/mtab', help="mtab file")
     psr.add_argument('--debug', action='store_true',
                      help="print debug information")
+    psr.add_argument('--foreground', action='store_true',
+                     help="don't daemonise and print logs to stdout")
     args = psr.parse_args()
 
-    # Set up logging
-    logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO,
-                        format='%(asctime)s %(levelname)s %(message)s',
-                        datefmt='%Y-%m-%d %H:%M')
-
-    # Set up inotify
-    logging.debug("Setting up inotify")
-    manager = pyinotify.WatchManager()
-    handler = EventHandler(args.timeout)
-    notifier = pyinotify.Notifier(manager, handler)
-
-    # Set up alarming
-    def umount(signum, frame): # pylint: disable=unused-argument
-        '''
-        Unmount after killing processes if needs be
-        '''
-
-        # Kill processes
-        killall(args.mountpoint)
-
-        # Unmount filesystem
-        logging.info("Running %s %s", args.command, args.mountpoint)
-        subprocess.call('%s %s' % (args.command, args.mountpoint), shell=True)
-
-        # Wait for mount and add watches again
-        waitmount(args.mtab, args.mountpoint)
-        addwatches(manager, notifier, args.mountpoint, args.timeout)
-
-    signal.signal(signal.SIGALRM, umount)
-
-    if os.path.ismount(args.mountpoint):
-        addwatches(manager, notifier, args.mountpoint, args.timeout)
+    # Run
+    if args.foreground:
+        run(args.mountpoint, args.timeout, args.command,
+            args.mtab, args.foreground, args.debug)
     else:
-        waitmount(args.mtab, args.mountpoint)
-        addwatches(manager, notifier, args.mountpoint, args.timeout)
+        with daemon.DaemonContext():
+            run(args.mountpoint, args.timeout, args.command,
+                args.mtab, args.foreground, args.debug)
 
 
 if __name__ == '__main__':
