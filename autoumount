@@ -8,12 +8,19 @@ import sys
 import os
 import signal
 import argparse
+from argparse import ArgumentDefaultsHelpFormatter
 import subprocess
 import logging
+import time
 import pyinotify
 import psutil
 
-NORMAL = pyinotify.IN_ACCESS | pyinotify.IN_ATTRIB
+# Not all events cause attribute changes
+NORMAL = pyinotify.IN_ACCESS | \
+         pyinotify.IN_ATTRIB | \
+         pyinotify.IN_DELETE | \
+         pyinotify.IN_MODIFY | \
+         pyinotify.IN_MOVED_FROM
 CREATE = pyinotify.IN_CREATE
 
 class EventHandler(pyinotify.ProcessEvent):
@@ -21,7 +28,7 @@ class EventHandler(pyinotify.ProcessEvent):
     Reset timer on filesystem activity
     '''
 
-    def __init__(self, manager, mountpoint, timeout):
+    def __init__(self, manager, mountpoint, timeout, wait):
         '''
         Set timeout
         '''
@@ -31,12 +38,38 @@ class EventHandler(pyinotify.ProcessEvent):
         self.manager = manager
         self.mountpoint = mountpoint
         self.timeout = timeout
+        self.wait = wait
 
     def process_IN_ACCESS(self, _): # pylint: disable=invalid-name
         '''
         Reset timer on accesses
         '''
 
+        logging.debug("Access notified, resetting timeout")
+        signal.alarm(self.timeout)
+
+    def process_IN_MOVED_FROM(self, _): # pylint: disable=invalid-name
+        '''
+        Reset timer on move
+        '''
+
+        logging.debug("Move notified, resetting timeout")
+        signal.alarm(self.timeout)
+
+    def process_IN_MODIFY(self, _): # pylint: disable=invalid-name
+        '''
+        Reset timer on modification
+        '''
+
+        logging.debug("Modification notified, resetting timeout")
+        signal.alarm(self.timeout)
+
+    def process_IN_DELETE(self, _): # pylint: disable=invalid-name
+        '''
+        Reset timer on deletion
+        '''
+
+        logging.debug("Deletion notified, resetting timeout")
         signal.alarm(self.timeout)
 
     def process_IN_ATTRIB(self, _): # pylint: disable=invalid-name
@@ -44,6 +77,7 @@ class EventHandler(pyinotify.ProcessEvent):
         Reset timer on attribute changes
         '''
 
+        logging.debug("Attribute change notified, resetting timeout")
         signal.alarm(self.timeout)
 
     def process_IN_CREATE(self, event): # pylint: disable=invalid-name
@@ -55,8 +89,12 @@ class EventHandler(pyinotify.ProcessEvent):
             logging.debug("Removing watch on %s", event.path)
             self.manager.rm_watch(event.wd)
 
+            # Wait for any filesystem to effectively be mounted
+            logging.debug("Waiting %ds for filesystem to be mounted", self.wait)
+            time.sleep(self.wait)
+
             logging.debug("Adding watch on %s", self.mountpoint)
-            self.manager.add_watch(self.mountpoint, NORMAL)
+            self.manager.add_watch(self.mountpoint, NORMAL, rec=True)
 
             logging.debug("Setting up %ds timeout", self.timeout)
             signal.alarm(self.timeout)
@@ -88,13 +126,16 @@ def main():
     '''
 
     # Parse arguments
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mountpoint')
-    parser.add_argument('timeout', type=int)
-    parser.add_argument('command')
-    parser.add_argument('--debug', action='store_true',
-                        help="print debug information")
-    args = parser.parse_args()
+    psr = argparse.ArgumentParser(description=__doc__,
+                                  formatter_class=ArgumentDefaultsHelpFormatter)
+    psr.add_argument('mountpoint')
+    psr.add_argument('timeout', type=int)
+    psr.add_argument('command')
+    psr.add_argument('--debug', action='store_true',
+                     help="print debug information")
+    psr.add_argument('--wait', type=int, default=5,
+                     help="seconds to wait before adding watch to directory")
+    args = psr.parse_args()
 
     # Set up logging
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO,
@@ -119,7 +160,12 @@ def main():
 
         # Unmount filesystem
         logging.info("Running %s %s", args.command, mountpoint)
-        subprocess.call('%s %s' % (args.command, mountpoint), shell=True)
+        proc = subprocess.Popen('%s %s' % (args.command, mountpoint),
+                                stderr=subprocess.PIPE,
+                                shell=True)
+        _, err = proc.communicate()
+        if err.strip():
+            logging.warning(err.strip())
 
         # Remove watches on mountpoint (which may be removed by themselves)
         for watch in watches:
@@ -136,7 +182,7 @@ def main():
     # Set up inotify and alarms
     logging.debug("Setting up inotify")
     manager = pyinotify.WatchManager()
-    handler = EventHandler(manager, mountpoint, args.timeout)
+    handler = EventHandler(manager, mountpoint, args.timeout, args.wait)
     notifier = pyinotify.Notifier(manager, handler)
 
     signal.signal(signal.SIGALRM, umount)
