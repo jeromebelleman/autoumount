@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 '''
-Automatically umount filesystem after a period of inactivity
+Automatically umount filesystems after a period of inactivity
 '''
 
 import sys
@@ -136,7 +136,7 @@ def run(mountpoint, timeout, command, mtab, foreground, debug):
 
     # Set up logging
     try:
-        logfile = '/var/log/%s.log' % __file__
+        logfile = '/var/log/%s.log' % os.path.basename(__file__)
         logging.basicConfig(level=logging.DEBUG if debug else logging.INFO,
                             format='%(asctime)s %(levelname)s %(message)s',
                             datefmt='%Y-%m-%d %H:%M',
