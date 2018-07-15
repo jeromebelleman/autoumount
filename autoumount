@@ -87,7 +87,7 @@ def waitmount(mtab, mountpoint):
                     return
 
 
-def killall(mountpoint):
+def killall(mountpoint, cmdline):
     '''
     Kill all processes keeping a filesystem busy
     '''
@@ -103,6 +103,12 @@ def killall(mountpoint):
                     logging.debug("Killing %s", ' '.join(proc.cmdline()))
                     proc.kill()
                     continue
+            if cmdline:
+                for word in proc.cmdline():
+                    if word.startswith(mountpoint):
+                        logging.debug("Killing %s", ' '.join(proc.cmdline()))
+                        proc.kill()
+                        continue
         except psutil.AccessDenied:
             pass
 
@@ -129,7 +135,7 @@ def addwatches(manager, notifier, mountpoint, timeout):
     notifier.loop()
 
 
-def run(mountpoint, timeout, command, mtab, foreground, debug):
+def run(mountpoint, timeout, command, cmdline, mtab, foreground, debug):
     '''
     Run logic
     '''
@@ -158,7 +164,7 @@ def run(mountpoint, timeout, command, mtab, foreground, debug):
         '''
 
         # Kill processes
-        killall(mountpoint)
+        killall(mountpoint, cmdline)
 
         # Unmount filesystem
         logging.info("Running %s %s", command, mountpoint)
@@ -188,6 +194,8 @@ def main():
     psr.add_argument('mountpoint', help="mount point")
     psr.add_argument('timeout', type=int, help="seconds after which to unmount")
     psr.add_argument('command', help="unmount command")
+    psr.add_argument('--cmdline', action='store_true',
+                     help="kill processes with mountpoint in command line")
     psr.add_argument('--mtab', default='/etc/mtab', help="mtab file")
     psr.add_argument('--debug', action='store_true',
                      help="print debug information")
@@ -198,11 +206,11 @@ def main():
     # Run
     if args.foreground:
         run(args.mountpoint, args.timeout, args.command,
-            args.mtab, args.foreground, args.debug)
+            args.cmdline, args.mtab, args.foreground, args.debug)
     else:
         with daemon.DaemonContext():
             run(args.mountpoint, args.timeout, args.command,
-                args.mtab, args.foreground, args.debug)
+                args.cmdline, args.mtab, args.foreground, args.debug)
 
 
 if __name__ == '__main__':
