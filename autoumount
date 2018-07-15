@@ -77,8 +77,8 @@ def waitmount(mtab, mountpoint):
     '''
 
     logging.debug("Waiting for %s to be mounted", mountpoint)
-    with open(mtab) as fhl:
-        while True:
+    while True:
+        with open(mtab) as fhl:
             # https://stackoverflow.com/questions/5070801
             select.select([], [], [fhl])
             for line in fhl:
